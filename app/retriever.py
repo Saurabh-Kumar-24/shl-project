@@ -5,36 +5,42 @@ import re
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 from app.catalog import Assessment, Catalog
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 SEMANTIC_TOP_K = 20
 FINAL_TOP_K = 10
+
+
+def _normalize(vectors: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return vectors / norms
 
 
 class HybridRetriever:
     def __init__(self, catalog: Catalog) -> None:
         self.catalog = catalog
-        self._model = SentenceTransformer(EMBEDDING_MODEL)
+        self._model = TextEmbedding(model_name=EMBEDDING_MODEL)
         self._index: faiss.IndexFlatIP | None = None
         self._build_index()
 
     def _build_index(self) -> None:
         texts = [a.rich_text for a in self.catalog.assessments]
-        embeddings = self._model.encode(texts, normalize_embeddings=True)
-        embeddings = np.asarray(embeddings, dtype=np.float32)
+        embeddings = np.array(list(self._model.embed(texts)), dtype=np.float32)
+        embeddings = _normalize(embeddings)
         dim = embeddings.shape[1]
         self._index = faiss.IndexFlatIP(dim)
         self._index.add(embeddings)
         logger.info("FAISS index built: %d vectors, dim=%d", len(texts), dim)
 
     def _semantic_search(self, query: str, top_k: int = SEMANTIC_TOP_K) -> list[tuple[Assessment, float]]:
-        vec = self._model.encode([query], normalize_embeddings=True)
-        vec = np.asarray(vec, dtype=np.float32)
+        vec = np.array(list(self._model.embed([query])), dtype=np.float32)
+        vec = _normalize(vec)
         scores, indices = self._index.search(vec, top_k)
         results: list[tuple[Assessment, float]] = []
         for score, idx in zip(scores[0], indices[0]):
